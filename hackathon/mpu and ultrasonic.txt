@@ -1,0 +1,71 @@
+#include <Wire.h>
+#include <MPU6050.h>
+
+MPU6050 mpu;
+
+const int trigPin = 7;
+const int echoPin = 6;
+
+long duration;
+int distance;
+bool isMoving = false;
+
+// Previous readings to compare changes
+int16_t prevAx = 0, prevAy = 0, prevAz = 0;
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  mpu.initialize();
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  if (mpu.testConnection()) {
+    Serial.println("MPU6050 connected.");
+  } else {
+    Serial.println("MPU6050 connection failed.");
+  }
+}
+
+void loop() {
+  int16_t ax, ay, az;
+  mpu.getAcceleration(&ax, &ay, &az);
+
+  // Detect significant change in any axis
+  int deltaX = abs(ax - prevAx);
+  int deltaY = abs(ay - prevAy);
+  int deltaZ = abs(az - prevAz);
+
+  // Set your motion threshold (e.g., >1000)
+  if (deltaX > 1000 || deltaY > 1000 || deltaZ > 1000) {
+    isMoving = true;
+  } else {
+    isMoving = false;
+  }
+
+  // Store current readings for next loop comparison
+  prevAx = ax;
+  prevAy = ay;
+  prevAz = az;
+
+  if (isMoving) {
+    // Ultrasonic logic
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+
+    duration = pulseIn(echoPin, HIGH);
+    distance = duration * 0.034 / 2;
+
+    Serial.print("Moving | Obstacle at: ");
+    Serial.print(distance);
+    Serial.println(" cm");
+  } else {
+    Serial.println("Still | System off");
+  }
+
+  delay(300);  // Stable loop rate
+}
