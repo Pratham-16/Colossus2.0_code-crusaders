@@ -1,0 +1,130 @@
+import cv2
+import numpy as np
+import requests
+import serial
+import time
+import os
+import uuid
+from PIL import Image
+from io import BytesIO
+from gtts import gTTS
+from googletrans import Translator
+from playsound import playsound
+
+# ========== Configuration ==========
+
+# IP Webcam snapshot URL (from IP Webcam Android app)
+camera_url = 'http://192.168.160.246:8080/shot.jpg'  # Replace with your actual IP
+
+# Arduino setup
+ser = serial.Serial('COM3', 9600, timeout=1)  # Replace COM3 with your actual port
+time.sleep(2)
+
+# Load MobileNetSSD pre-trained model files
+net = cv2.dnn.readNetFromCaffe('MobileNetSSD_deploy.prototxt',
+                              'MobileNetSSD_deploy.caffemodel')
+
+# Supported classes
+CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+          "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+          "dog", "horse", "motorbike", "person", "pottedplant",
+          "sheep", "sofa", "train", "tvmonitor"]
+
+# Translation setup
+translator = Translator()
+target_lang = 'ta'  # 'ta' = Tamil, use 'hi' for Hindi, etc.
+
+# Track detected objects and messages to avoid repetition
+spoken_objects = set()
+last_arduino_message = ""
+
+print("🎥 Starting combined object detection and translation system...")
+print("🗣 Objects will be detected and Arduino messages will be translated.")
+
+# ========== Helper Functions ==========
+def speak_text(text, language=target_lang):
+    """Convert text to speech in the specified language and play it"""
+    filename = f"tts_{uuid.uuid4().hex[:6]}.mp3"
+    tts = gTTS(text=text, lang=language)
+    tts.save(filename)
+    
+    print(f"🔊 Speaking: {text}")
+    playsound(filename)
+    os.remove(filename)
+
+# ========== Main Loop ==========
+try:
+    while True:
+        # Check Arduino serial data
+        if ser.in_waiting:
+            line = ser.readline().decode('utf-8').strip()
+            
+            if line.startswith("Obstacle at:") and line != last_arduino_message:
+                last_arduino_message = line
+                print("📏 ", line)
+                
+                # Translate obstacle message
+                translated = translator.translate(line, dest=target_lang).text
+                print("🌐 Translated:", translated)
+                
+                # Convert to speech
+                speak_text(translated)
+        
+        # Process camera feed for object detection
+        try:
+            # Capture snapshot from IP camera
+            img_resp = requests.get(camera_url)
+            img = Image.open(BytesIO(img_resp.content))
+            frame = np.array(img)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            (h, w) = frame.shape[:2]
+            
+            # Preprocess frame for MobileNet-SSD
+            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843,
+                                        (300, 300), 127.5)
+            net.setInput(blob)
+            detections = net.forward()
+            
+            detected_objects = []
+            
+            for i in range(detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
+                
+                if confidence > 0.5:
+                    idx = int(detections[0, 0, i, 1])
+                    label = CLASSES[idx]
+                    detected_objects.append(label)
+                    
+                    # Bounding box
+                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                    (startX, startY, endX, endY) = box.astype("int")
+                    cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 255, 0), 2)
+                    cv2.putText(frame, label, (startX, startY - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    
+                    # Speak only if not spoken already
+                    if label not in spoken_objects:
+                        # Translate the object name
+                        translated_object = translator.translate(label, dest=target_lang).text
+                        speak_text(translated_object)
+                        spoken_objects.add(label)
+            
+            # Reset spoken objects if no longer in view (optional)
+            # This allows re-announcing objects that disappear and reappear
+            spoken_objects = spoken_objects.intersection(set(detected_objects))
+            
+            # Show video feed
+            cv2.imshow("Live Object Detection", frame)
+            if cv2.waitKey(1) == 27:  # Press ESC to quit
+                break
+                
+        except Exception as e:
+            print(f"⚠ Camera error: {e}")
+            time.sleep(1)  # Wait before retrying
+            
+except KeyboardInterrupt:
+    print("\n🛑 Program stopped.")
+finally:
+    ser.close()
+    cv2.destroyAllWindows()
